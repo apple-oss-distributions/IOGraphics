@@ -20,28 +20,27 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#include <IOKit/ndrvsupport/IONDRVFramebuffer.h>
+#include <IOKit/assert.h>
+#include <IOKit/i2c/IOI2CInterface.h>
 
-#ifndef _IOKIT_IOGRAPHICSDEVICE_H
-#define _IOKIT_IOGRAPHICSDEVICE_H
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-#include <IOKit/IOService.h>
-#include <IOKit/graphics/IOGraphicsTypes.h>
-
-
-class IOGraphicsDevice : public IOService
+class IONDRVI2CInterface : public IOI2CInterface
 {
-    OSDeclareAbstractStructors(IOGraphicsDevice)
+    OSDeclareDefaultStructors(IONDRVI2CInterface)
 
+    IONDRVFramebuffer * fNdrv;
+    SInt32		fBusID;
+    UInt32              supportedTypes;
+    UInt32              supportedCommFlags;
+    
 public:
+    virtual bool start( IOService * provider );
+    virtual IOReturn startIO( IOI2CRequest * request );
 
-    virtual void hideCursor( void ) = 0;
-    virtual void showCursor( Point * cursorLoc, int frame ) = 0;
-    virtual void moveCursor( Point * cursorLoc, int frame ) = 0;
-
-    virtual void getVBLTime( AbsoluteTime * time, AbsoluteTime * delta ) = 0;
-
-    virtual void getBoundingRect ( Bounds ** bounds ) = 0;
+    static IONDRVI2CInterface * withNDRV( IONDRVFramebuffer * ndrv, SInt32 busID );
+    static IOReturn create( IONDRVFramebuffer * ndrv );
 };
 
-#endif /* ! _IOKIT_IOGRAPHICSDEVICE_H */
-
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */

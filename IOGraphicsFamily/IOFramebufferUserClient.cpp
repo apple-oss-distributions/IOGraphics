@@ -19,14 +19,6 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
-/*
- * Copyright (c) 1998 Apple Computer, Inc.  All rights reserved. 
- *
- * HISTORY
- *
- * 14 Aug 98 sdouglas created.
- * 08 Dec 98 sdouglas cpp.
- */
 
 #define IOFRAMEBUFFER_PRIVATE
 #include <IOKit/graphics/IOFramebufferShared.h>
@@ -140,18 +132,13 @@ IOReturn IOFramebufferUserClient::clientMemoryForType( UInt32 type,
 
 IOReturn IOFramebufferUserClient::setProperties( OSObject * properties )
 {
-    OSDictionary *	dict;
-    OSArray *		array;
+    OSDictionary *	props;
     IOReturn		kr = kIOReturnUnsupported;
 
-    if( !(dict = OSDynamicCast( OSDictionary, properties)))
+    if( !(props = OSDynamicCast( OSDictionary, properties)))
 	return( kIOReturnBadArgument);
 
-    if( (array = OSDynamicCast(OSArray,
-		dict->getObject( kIOFBDetailedTimingsKey))))
-        kr = owner->setDetailedTimings( array );
-    else
-        kr = kIOReturnBadArgument;
+    kr = owner->extSetProperties( props );
 
     return( kr );
 }
@@ -160,13 +147,13 @@ IOExternalMethod * IOFramebufferUserClient::getTargetAndMethodForIndex(
                                                 IOService ** targetP, UInt32 index )
 {
     static const IOExternalMethod methodTemplate[] = {
-/* 0 */  { NULL, (IOMethod) &IOFramebuffer::createSharedCursor,
+/* 0 */  { NULL, (IOMethod) &IOFramebuffer::extCreateSharedCursor,
             kIOUCScalarIScalarO, 3, 0 },
-/* 1 */  { NULL, (IOMethod) &IOFramebuffer::getPixelInformation,
+/* 1 */  { NULL, (IOMethod) &IOFramebuffer::extGetPixelInformation,
             kIOUCScalarIStructO, 3, sizeof( IOPixelInformation) },
-/* 2 */  { NULL, (IOMethod) &IOFramebuffer::getCurrentDisplayMode,
+/* 2 */  { NULL, (IOMethod) &IOFramebuffer::extGetCurrentDisplayMode,
             kIOUCScalarIScalarO, 0, 2 },
-/* 3 */  { NULL, (IOMethod) &IOFramebuffer::setStartupDisplayMode,
+/* 3 */  { NULL, (IOMethod) &IOFramebuffer::extSetStartupDisplayMode,
             kIOUCScalarIScalarO, 2, 0 },
 /* 4 */  { NULL, (IOMethod) &IOFramebuffer::extSetDisplayMode,
             kIOUCScalarIScalarO, 2, 0 },
@@ -182,7 +169,7 @@ IOExternalMethod * IOFramebufferUserClient::getTargetAndMethodForIndex(
             kIOUCStructIStructO, sizeof( Bounds), 0 },
 /* 10 */  { NULL, (IOMethod) &IOFramebuffer::extSetNewCursor,
             kIOUCScalarIScalarO, 3, 0 },
-/* 11 */  { NULL, (IOMethod) &IOFramebuffer::setGammaTable,
+/* 11 */  { NULL, (IOMethod) &IOFramebuffer::extSetGammaTable,
             kIOUCScalarIStructI, 3, 0xffffffff },
 /* 12 */  { NULL, (IOMethod) &IOFramebuffer::extSetCursorVisible,
             kIOUCScalarIScalarO, 1, 0 },

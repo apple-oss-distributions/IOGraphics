@@ -280,7 +280,8 @@ enum {
     kModeSimulscan              = 8,                            /* Indicates that more than one display connection can be driven from a single framebuffer controller. */
     kModeNotPreset              = 9,                            /* Indicates that the timing is not a factory preset for the current display (geometry may need correction) */
     kModeBuiltIn                = 10,                           /* Indicates that the display mode is for the built-in connect only (on multiconnect devices like the PB 3400) Only the driver is quieried */
-    kModeStretched              = 11                            /* Indicates that the display mode will be stretched/distorted to match the display aspect ratio */
+    kModeStretched              = 11,                           /* Indicates that the display mode will be stretched/distorted to match the display aspect ratio */
+    kModeNotGraphicsQuality     = 12                            /* Indicates that the display mode is not the highest quality (eg. stretching artifacts).  Intended as a hint */
 };
 
 /* csDepthFlags in VDVideoParametersInfoRec */
@@ -304,7 +305,18 @@ enum {
     kHardwareWake               = 129,
     kHardwareWakeFromSuspend    = 130,
     kHardwareWakeToDoze         = 131,
-    kHardwareWakeToDozeFromSuspend = 132
+    kHardwareWakeToDozeFromSuspend = 132,
+    kHardwarePark               = 133,
+    kHardwareDrive              = 134
+};
+
+/* Reduced perf level, for GetPowerState, SetPowerState*/
+enum {
+    kPowerStateReducedPowerMask   = 0x00000300,
+    kPowerStateFullPower          = 0x00000000,
+    kPowerStateReducedPower1      = 0x00000100,
+    kPowerStateReducedPower2      = 0x00000200,
+    kPowerStateReducedPower3      = 0x00000300
 };
 
 enum {
@@ -315,12 +327,22 @@ enum {
     kPowerStateSleepCanPowerOffBit = 3,                         /* supports power down sleep (ie PCI power off)*/
     kPowerStateSleepNoDPMSBit   = 4,                            /* Bug #2425210.  Do not use DPMS with this display.*/
     kPowerStateSleepWaketoDozeBit = 5,                          /* Supports Wake to Doze */
+    kPowerStateSleepWakeNeedsProbeBit = 6,                      /* Does not sense connection changes on wake */
+
     kPowerStateNeedsRefreshMask = (1L << kPowerStateNeedsRefresh),
     kPowerStateSleepAwareMask   = (1L << kPowerStateSleepAwareBit),
     kPowerStateSleepForbiddenMask = (1L << kPowerStateSleepForbiddenBit),
     kPowerStateSleepCanPowerOffMask = (1L << kPowerStateSleepCanPowerOffBit),
     kPowerStateSleepNoDPMSMask  = (1L << kPowerStateSleepNoDPMSBit),
-    kPowerStateSleepWaketoDozeMask = (1L << kPowerStateSleepWaketoDozeBit)
+    kPowerStateSleepWaketoDozeMask = (1L << kPowerStateSleepWaketoDozeBit),
+    kPowerStateSleepWakeNeedsProbeMask = (1L << kPowerStateSleepWakeNeedsProbeBit),
+
+    kPowerStateSupportsReducedPower1Bit = 10,
+    kPowerStateSupportsReducedPower2Bit = 11,
+    kPowerStateSupportsReducedPower3Bit = 12,
+    kPowerStateSupportsReducedPower1BitMask = (1 << 10),
+    kPowerStateSupportsReducedPower2BitMask = (1 << 11),
+    kPowerStateSupportsReducedPower3BitMask = (1 << 12)
 };
 
 
@@ -351,6 +373,9 @@ enum {
     cscDoCommunication          = 33,                           /* Takes a VDCommunicationPtr */
     cscProbeConnection		= 34,				/* Takes nil pointer */
                                                                 /* (may generate a kFBConnectInterruptServiceType service interrupt) */
+    cscSetScaler		= 36,				/* Takes a VDScalerPtr */
+    cscSetMirror                = 37,				/* Takes a VDMirrorPtr*/
+    cscSetFeatureConfiguration  = 38,				/* Takes a VDConfigurationPtr*/
     cscUnusedCall               = 127                           /* This call used to expand the scrn resource.  Its imbedded data contains more control info */
 };
 
@@ -387,7 +412,11 @@ enum {
     cscGetClutBehavior          = 29,                           /* Takes a VDClutBehavior */
     cscGetTimingRanges          = 30,                           /* Takes a VDDisplayTimingRangePtr */
     cscGetDetailedTiming        = 31,                           /* Takes a VDDetailedTimingPtr */
-    cscGetCommunicationInfo     = 32                            /* Takes a VDCommunicationInfoPtr */
+    cscGetCommunicationInfo     = 32,                           /* Takes a VDCommunicationInfoPtr */
+    cscGetScalerInfo		= 35,				/* Takes a VDScalerInfoPtr */
+    cscGetScaler		= 36,				/* Takes a VDScalerPtr */
+    cscGetMirror                = 37,				/* Takes a VDMirrorPtr*/
+    cscGetFeatureConfiguration  = 38				/* Takes a VDConfigurationPtr*/
 };
 
 /* Bit definitions for the Get/Set Sync call*/
@@ -749,14 +778,22 @@ enum {
 
 /* VDCommunicationRec.csSendType and VDCommunicationRec.csReplyType values*/
 enum {
-    kVideoNoTransactionType     = 0,                            /* No transaction*/
-    kVideoSimpleI2CType         = 1,                            /* Simple I2C message*/
-    kVideoDDCciReplyType        = 2                             /* DDC/ci message (with imbedded length)*/
+    kVideoNoTransactionType     = 0,	/* No transaction*/
+    kVideoNoTransactionTypeMask = (1 << kVideoNoTransactionType),
+    kVideoSimpleI2CType         = 1,	/* Simple I2C message*/
+    kVideoSimpleI2CTypeMask     = (1 << kVideoSimpleI2CType),
+    kVideoDDCciReplyType        = 2,	/* DDC/ci message (with imbedded length)*/
+    kVideoDDCciReplyTypeMask    = (1 << kVideoDDCciReplyType),
+    kVideoCombinedI2CType       = 3,    /* Combined format I2C R/~W transaction*/
+    kVideoCombinedI2CTypeMask   = (1 << kVideoCombinedI2CType)
 };
 
 // VDCommunicationRec.csCommFlags and VDCommunicationInfoRec.csSupportedCommFlags
 enum {
-    kVideoReplyMicroSecDelayMask	= (1<<0)		/* If set, the driver should delay csMinReplyDelay micro seconds between send and receive*/
+    kVideoReplyMicroSecDelayBit   = 0,    /* If bit set, the driver should delay csMinReplyDelay micro seconds between send and receive*/
+    kVideoReplyMicroSecDelayMask  = (1 << kVideoReplyMicroSecDelayBit),
+    kVideoUsageAddrSubAddrBit     = 1,    /* If bit set, the driver understands to use the lower 16 bits of the address field as two 8 bit values (address/subaddress) for the I2C transaction*/
+    kVideoUsageAddrSubAddrMask    = (1 << kVideoUsageAddrSubAddrBit)
 };
 
 
@@ -1052,7 +1089,8 @@ enum {
     kVideoI2CTransactionErr     = -10932,
     kVideoI2CBusyErr            = -10933,
     kVideoI2CTransactionTypeErr = -10934,
-    kVideoBufferSizeErr         = -10935
+    kVideoBufferSizeErr         = -10935,
+    kVideoCannotMirrorErr       = -10936
 };
 
 
@@ -1165,13 +1203,25 @@ struct VDDetailedTimingRec {
 typedef struct VDDetailedTimingRec      VDDetailedTimingRec;
 
 typedef VDDetailedTimingRec *           VDDetailedTimingPtr;
-typedef UInt32                          VDClutBehavior;
-typedef VDClutBehavior *                VDClutBehaviorPtr;
+
+/* csScalerFeatures */
+enum {
+    kScaleStretchOnlyMask	  = (1<<0),			/* True means the driver cannot add borders to avoid non-square pixels */
+    kScaleCanUpSamplePixelsMask	  = (1<<1),			/* True means timings with more active clocks than pixels (ie 640x480 pixels on a 1600x1200 timing) */
+    kScaleCanDownSamplePixelsMask = (1<<2)			/* True means timings with fewer active clocks than pixels (ie 1600x1200  pixels on a 640x480 timing) */
+};
+
+/* csScalerFlags */
+enum {
+    kScaleStretchToFitMask	  = (1<<0)			/* True means the driver should avoid borders and allow non-square pixels */
+};
+
+typedef UInt32			VDClutBehavior;
+typedef VDClutBehavior *	VDClutBehaviorPtr;
 enum {
     kSetClutAtSetEntries        = 0,                            /* SetEntries behavior is to update clut during SetEntries call*/
     kSetClutAtVBL               = 1                             /* SetEntries behavior is to upate clut at next vbl*/
 };
-
 
 
 struct VDCommunicationRec {
@@ -1218,6 +1268,101 @@ struct VDCommunicationInfoRec {
 typedef struct VDCommunicationInfoRec   VDCommunicationInfoRec;
 
 typedef VDCommunicationInfoRec *        VDCommunicationInfoPtr;
+
+
+struct VDScalerRec {
+    UInt32                          csScalerSize;		/* Init to sizeof(VDScalerRec) */
+    UInt32                          csScalerVersion;		/* Init to 0 */
+    UInt32                          csReserved1;		/* Init to 0 */
+    UInt32                          csReserved2;		/* Init to 0 */
+    
+    DisplayModeID                   csDisplayModeID;		/* Display Mode ID modified by this call. */
+    UInt32                          csDisplayModeSeed;		/*  */
+    UInt32                          csDisplayModeState;		/* Display Mode state */
+    UInt32                          csReserved3;		/* Init to 0 */
+    
+    UInt32                          csScalerFlags;		/* Init to 0 */
+    UInt32                          csHorizontalPixels;		/* Graphics system addressable pixels */
+    UInt32                          csVerticalPixels;		/* Graphics system addressable lines */
+    UInt32                          csReserved4;		/* Init to 0 */
+
+    UInt32                          csReserved5;		/* Init to 0 */
+    UInt32                          csReserved6;		/* Init to 0 */
+    UInt32                          csReserved7;		/* Init to 0 */
+    UInt32                          csReserved8;		/* Init to 0 */
+};
+typedef struct VDScalerRec   VDScalerRec;
+typedef VDScalerRec  *VDScalerPtr;
+
+struct VDScalerInfoRec {
+    UInt32                          csScalerInfoSize;		/* Init to sizeof(VDScalerInfoRec) */
+    UInt32                          csScalerInfoVersion;	/* Init to 0 */
+    UInt32                          csReserved1;		/* Init to 0 */
+    UInt32                          csReserved2;		/* Init to 0 */
+    
+    UInt32                          csScalerFeatures;		/* Feature flags */
+    UInt32                          csMaxHorizontalPixels;	/* limit to horizontal scaled pixels */
+    UInt32                          csMaxVerticalPixels;	/* limit to vertical scaled pixels */
+    UInt32                          csReserved3;		/* Init to 0 */
+
+    UInt32                          csReserved4;		/* Init to 0 */
+    UInt32                          csReserved5;		/* Init to 0 */
+    UInt32                          csReserved6;		/* Init to 0 */
+    UInt32                          csReserved7;		/* Init to 0 */
+};
+typedef struct VDScalerInfoRec   VDScalerInfoRec;
+typedef VDScalerInfoRec *VDScalerInfoPtr;
+
+enum {
+    /* csMirrorFeatures*/
+    kMirrorSameDepthOnlyMirrorMask = (1 << 0),			/* Commonly true - Mirroring can only be done if the displays are the same bitdepth*/
+    kMirrorSameSizeOnlyMirrorMask = (1 << 1),			/* Commonly false - Mirroring can only be done if the displays are the same size*/
+    kMirrorSameTimingOnlyMirrorMask = (1 << 2),			/* Sometimes true - Mirroring can only be done if the displays are the same timing*/
+    kMirrorCommonGammaMask        = (1 << 3)			/* Sometimes true - Only one gamma correction LUT.*/
+};
+
+enum {
+    /* csMirrorSupportedFlags and csMirrorFlags*/
+    kMirrorCanMirrorMask          = (1 << 0), 			/* Set means we can HW mirrored right now (uses csMirrorEntryID)*/
+    kMirrorAreMirroredMask        = (1 << 1), 			/* Set means we are HW mirrored right now (uses csMirrorEntryID)*/
+    kMirrorUnclippedMirrorMask    = (1 << 2), 			/* Set means mirrored displays are not clipped to their intersection*/
+    kMirrorHAlignCenterMirrorMask = (1 << 3), 			/* Set means mirrored displays can/should be centered horizontally*/
+    kMirrorVAlignCenterMirrorMask = (1 << 4), 			/* Set means mirrored displays can/should be centered vertically*/
+    kMirrorCanChangePixelFormatMask = (1 << 5),			/* Set means mirrored the device should change the pixel format of mirrored displays to allow mirroring.*/
+    kMirrorCanChangeTimingMask    = (1 << 6), 			/* Set means mirrored the device should change the timing of mirrored displays to allow mirroring.*/
+    kMirrorClippedMirrorMask	  = (1 << 7)			/* Set means mirrored displays are clipped to their intersection (driver handles blacking and base address adjustment)*/
+};
+
+struct VDMirrorRec {
+    UInt32              csMirrorSize;           /* Init to sizeof(VDMirrorRec)*/
+    UInt32              csMirrorVersion;        /* Init to 0*/
+    
+    void *		csMirrorRequestID[4];   /* Input RegEntryID to check for mirroring support and state*/
+    void *		csMirrorResultID[4];    /* Output RegEntryID of the next mirrored device*/
+    
+    UInt32              csMirrorFeatures;       /* Output summary features of the driver*/
+    UInt32              csMirrorSupportedFlags; /* Output configuration options supported by the driver*/
+    UInt32              csMirrorFlags;          /* Output configuration options active now*/
+    UInt32              csReserved1;            /* Init to 0*/
+    
+    
+    UInt32              csReserved2;            /* Init to 0*/
+    UInt32              csReserved3;            /* Init to 0*/
+    UInt32              csReserved4;            /* Init to 0*/
+    UInt32              csReserved5;            /* Init to 0*/
+};
+typedef struct VDMirrorRec VDMirrorRec;
+typedef VDMirrorRec * VDMirrorPtr;
+
+struct VDConfigurationRec {
+    UInt32              csConfigFeature;        /* input what feature to config - always input*/
+    UInt32              csConfigSupport;        /* output support value - always output*/
+    UInt32              csConfigValue;          /* input/output feature value - input on Control(), output on Status()*/
+    UInt32              csReserved1;
+    UInt32              csReserved2;
+};
+typedef struct VDConfigurationRec       VDConfigurationRec;
+typedef VDConfigurationRec *            VDConfigurationPtr;
 
 #if PRAGMA_STRUCT_ALIGN
     #pragma options align=reset
