@@ -22,6 +22,7 @@
 
 #define IOFRAMEBUFFER_PRIVATE
 #include <IOKit/graphics/IOFramebufferShared.h>
+#include <IOKit/graphics/IOGraphicsPrivate.h>
 #include <IOKit/pwr_mgt/RootDomain.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMessage.h>
@@ -260,6 +261,7 @@ bool IOFramebufferSharedUserClient::start( IOService * _owner )
 
     owner = (IOFramebuffer *) _owner;
     owner->sharedConnect = this;
+    setProperty(kIOUserClientSharedInstanceKey, kOSBooleanTrue);
 
     return (true);
 }
