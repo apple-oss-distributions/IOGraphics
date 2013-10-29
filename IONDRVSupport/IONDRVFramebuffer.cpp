@@ -78,11 +78,11 @@ enum
 #define TIMEEND(name, fmt, args...)								\
     AbsoluteTime_to_scalar(&endTime) = mach_absolute_time();    \
     absolutetime_to_nanoseconds(endTime, &nsec);                  \
-    IOLog("%08d [%s]: ", (uint32_t) (nsec / 1000000ULL), name); \
+    kprintf("%08d [%s]: ", (uint32_t) (nsec / 1000000ULL), name); \
     SUB_ABSOLUTETIME(&endTime, &startTime);			\
     absolutetime_to_nanoseconds(endTime, &nsec);	\
     nsec /= 1000000ULL;								\
-    IOLog(fmt, ## args , nsec);     \
+    kprintf(fmt, ## args , nsec);     \
 }
 
 
@@ -277,11 +277,7 @@ IOReturn IONDRVFramebuffer::setProperties( OSObject * properties )
 
         if (ndrv)
             ndrv->release();
-#if __ppc__
-        ndrv = IOPEFNDRV::fromRegistryEntry( nub, data, &_undefinedSymbolHandler, (void *) this );
-#else
         ndrv = NULL;
-#endif
         if (ndrv)
         {
             setName( ndrv->driverName());
@@ -508,11 +504,7 @@ bool IONDRVFramebuffer::start( IOService * provider )
         if ((data = OSDynamicCast(OSData, getProperty("driver,AAPL,MacOS,PowerPC"))))
             nub->setProperty("driver,AAPL,MacOS,PowerPC", data);
 
-#if __ppc__
-        ndrv = IOPEFNDRV::fromRegistryEntry( provider, 0, &_undefinedSymbolHandler, (void *) this );
-#else
         ndrv = NULL;
-#endif
         if (ndrv)
             setName( ndrv->driverName());
         consoleDevice = (0 != provider->getProperty("AAPL,boot-display"));
@@ -539,13 +531,7 @@ bool IONDRVFramebuffer::start( IOService * provider )
         if ((obj = nub->getProperty(kIOFBDependentIndexKey)))
             setProperty( kIOFBDependentIndexKey, obj );
 
-#ifdef __ppc__
-        platformSleep = (false == getPlatform()->hasPrivPMFeature( kPMHasLegacyDesktopSleepMask )
-                         && (false == getPlatform()->hasPMFeature( kPMCanPowerOffPCIBusMask )));
-#else
         platformSleep = false;
-#endif
-
         __private->removable = (0 != device->metaCast("IOCardBusDevice"));
 
         IOOptionBits flags = getPMRootDomain()->getSleepSupported();
@@ -1812,7 +1798,10 @@ void IONDRVFramebuffer::getCurrentConfiguration( void )
     }
     else
     {
-        currentDisplayMode = switchInfo.csData;
+        if ((kDisplayModeIDBootProgrammable != switchInfo.csData) || !currentDisplayMode)
+        {
+			currentDisplayMode = switchInfo.csData;
+		}
         currentDepth       = mapDepthIndex(currentDisplayMode, (IOIndex) switchInfo.csMode, true);
         currentPage        = switchInfo.csPage;
     
@@ -3668,14 +3657,7 @@ void IONDRVFramebuffer::initForPM( void )
     IOReturn err;
     bool dozeOnly;
 
-#ifdef __ppc__
-    dozeOnly = getPlatform()->hasPrivPMFeature( kPMHasLegacyDesktopSleepMask );
-    if (!dozeOnly 
-     && (getPlatform()->hasPMFeature(kPMCanPowerOffPCIBusMask)
-        || __private->removable))
-#else
     dozeOnly = false;
-#endif
     {
         sleepInfo.powerState = 0;
         sleepInfo.powerFlags = 0;
@@ -3951,10 +3933,6 @@ IOReturn IONDRVFramebuffer::ndrvSetPowerState( UInt32 newState )
 		}
         else if (kAVPowerSuspend == ndrvPowerState)
         {
-#ifdef __ppc__
-            if (false == getPlatform()->hasPMFeature(kPMHasDimSuspendSupportMask))
-                ndrvPowerState = kAVPowerStandby;
-#endif
         }
 
 

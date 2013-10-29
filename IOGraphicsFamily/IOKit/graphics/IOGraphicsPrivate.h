@@ -98,13 +98,8 @@ do {                                    \
     }
 
 // blue actual:0x00426bad gamma:0x00648cc3 bootx:0x00bfbfbf
-#if defined(OSTYPES_K64_REV)
 #define kIOFBBootGrayValue              0x00bfbfbf
-#define kIOFBGrayValue                  0x00648cc3
-#else
-#define kIOFBBootGrayValue              0x00648cc3
-#define kIOFBGrayValue                  0x00648cc3
-#endif
+#define kIOFBGrayValue                  0x00000000
 
 #ifndef kAppleAudioVideoJackStateKey
 #define kAppleAudioVideoJackStateKey    "AppleAudioVideoJackState"
