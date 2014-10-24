@@ -161,8 +161,6 @@
     static void updateVBL(OSObject * owner, IOTimerEventSource * sender);
     static void deferredCLUTSetTimer(OSObject * owner, IOTimerEventSource * sender);
     static void handleVBL(IOFramebuffer * inst, void * ref);
-    bool getTimeOfVBL(AbsoluteTime * deadline, uint32_t frames);
-
 
     static void writePrefs( OSObject * owner, IOTimerEventSource * sender );
     static void connectChangeInterrupt( IOFramebuffer * inst, void * ref );
@@ -191,6 +189,9 @@
     bool updateOnline(void);
     void displaysOnline(bool nowOnline);
 
+#if IOFB_DISABLEFB
+	static IODeviceMemory * _getApertureRange(IOFramebuffer * fb, IOPixelAperture aperture);
+#endif
 
     static void startThread(bool highPri);
     static void sleepWork( void * arg );
@@ -279,7 +280,10 @@ public:
     bool setPreference( class IODisplay * display, const OSSymbol * key, OSObject * value );
     bool setIntegerPreference( IODisplay * display, const OSSymbol * key, UInt32 value );
     void getTransformPrefs( IODisplay * display );
-    IOReturn flushParameters(void);
+
+    bool getTimeOfVBL(AbsoluteTime * deadline, uint32_t frames);
+    bool isWakingFromHibernateGfxOn(void);
+
     IOReturn getAttributeForConnectionParam(IOIndex connectIndex, 
                                             IOSelect attribute, uintptr_t * value);
     IOReturn setAttributeForConnectionParam(IOIndex connectIndex,

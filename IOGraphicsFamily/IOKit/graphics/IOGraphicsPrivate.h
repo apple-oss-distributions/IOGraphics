@@ -147,8 +147,10 @@ extern bool                   gIOFBSystemPower;
 extern IOOptionBits           gIOFBCurrentClamshellState;
 extern const class OSSymbol * gIOFramebufferKey;
 extern class OSData *         gIOFBZero32Data;
+extern class OSData *         gIOFBOne32Data;
 extern int32_t                gIOFBHaveBacklight;
 extern const OSSymbol *       gIOFBPMSettingDisplaySleepUsesDimKey;
+extern bool                   gIOGFades;
 
 #if __ppc__
 extern "C" void bcopy_nc( void * from, void * to, UInt32 l );
@@ -167,11 +169,13 @@ inline void bzero_nc( void * p, UInt32 l )              { bzero( p, l ); }
 extern uint32_t gIOGDebugFlags;
 enum
 {
-	kIOGDbgLidOpen     = 0x00000001,
-	kIOGDbgVBLThrottle = 0x00000002,
-	kIOGDbgK59Mode     = 0x00000004,
-	kIOGDbgDumbPanic   = 0x00000008,
-	kIOGDbgVBLDrift    = 0x00000010,
+	kIOGDbgLidOpen         = 0x00000001,
+	kIOGDbgVBLThrottle     = 0x00000002,
+	kIOGDbgK59Mode         = 0x00000004,
+	kIOGDbgDumbPanic       = 0x00000008,
+	kIOGDbgVBLDrift        = 0x00000010,
+	kIOGDbgForceBrightness = 0x00000020,
+	kIOGDbgFades           = 0x00000040,
 };
 
 #ifndef kIOScreenLockStateKey
@@ -191,6 +195,17 @@ typedef struct hibernate_preview_t hibernate_preview_t;
 #define kIOScreenLockStateKey      "IOScreenLockState"
 
 #endif /* ! kIOScreenLockStateKey */
+
+// these are the private instance variables for power management
+struct IODisplayPMVars
+{
+    UInt32              currentState;
+    // highest state number normally, lowest usable state in emergency
+    unsigned long       maxState;
+    unsigned long       minDimState;
+    // true if the display has had power lowered due to user inactivity
+    bool                displayIdle;
+};
 
 #endif /* ! _IOKIT_IOGRAPHICSPRIVATE_H */
 
