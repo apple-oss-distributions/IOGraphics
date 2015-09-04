@@ -93,6 +93,7 @@ protected:
 	uint32_t				 fFadeState;
 	uint32_t				 fFadeStateEnd;
 	uint32_t				 fFadeStateFadeMin;
+	uint32_t				 fFadeStateFadeMax;
 	uint32_t				 fFadeStateFadeDelta;
     uint8_t                  fClamshellSlept;
 	uint8_t					 fDisplayDims;
@@ -408,9 +409,12 @@ IOReturn AppleBacklightDisplay::setPowerState( unsigned long powerState, IOServi
 			{
 				 if ((2 == powerState) && (3 == fromPowerState))
 				 {
-					 // idle initiated -> dim
-					 fadeTime = gIODisplayFadeTime1*1000;
-			         max      = dimFade;
+					  if (fDisplayDims)
+					  {
+						 // idle initiated -> dim
+						 fadeTime = gIODisplayFadeTime1*1000;
+						 max      = dimFade;
+					  }
 				 }
 				 if ((1 == powerState) && (2 == fromPowerState))
 				 {
@@ -443,6 +447,7 @@ IOReturn AppleBacklightDisplay::setPowerState( unsigned long powerState, IOServi
 			if (current > max)   current = max;
 
 			fFadeStateFadeMin   = max - current;
+			fFadeStateFadeMax   = max;
 			fFadeStateFadeDelta = current;
 			if (steps > fFadeStateFadeDelta) steps = fFadeStateFadeDelta;
 
@@ -472,8 +477,6 @@ IOReturn AppleBacklightDisplay::setPowerState( unsigned long powerState, IOServi
         updatePowerParam();
 #endif
 	}
-
-	if (!fCurrentPowerState) fProviderPower = false;
 
     framebuffer->fbUnlock();
 
@@ -525,6 +528,11 @@ void AppleBacklightDisplay::fadeWork(IOTimerEventSource * sender)
 		if (fFadeBacklight)
 		{
 			if (!fFadeDown && !point) fade = 0;
+			else if (fFadeStateFadeMax > 0x8000)
+			{
+				fade = fFadeDown ? fFadeStateFadeMax : 0;
+				fFadeBacklight = false;
+			}
 			else
 			{
 				fade = ((point * fFadeStateFadeDelta) / fFadeStateEnd);
@@ -681,6 +689,7 @@ bool AppleBacklightDisplay::updatePowerParam(void)
 			fProviderPower, fClamshellSlept, fCurrentPowerState);
 
 	if (!fProviderPower) return (false);
+	if (!fCurrentPowerState) fProviderPower = false;
 
     displayParams = OSDynamicCast(OSDictionary, copyProperty(gIODisplayParametersKey));
     if (!displayParams) return (false);

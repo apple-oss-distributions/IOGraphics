@@ -131,7 +131,8 @@ enum
     kIOFBEventEnableClamshell    = 0x00000010,
     kIOFBEventProbeAll			 = 0x00000020,
     kIOFBEventDisplaysPowerState = 0x00000040,
-    kIOFBEventSystemPowerOn      = 0x00000080
+    kIOFBEventSystemPowerOn      = 0x00000080,
+    kIOFBEventVBLMultiplier      = 0x00000100
 };
 
 enum
@@ -225,6 +226,7 @@ static uint8_t				gIOFBVBLDrift;
 uint32_t					gIOGDebugFlags;
 uint32_t					gIOGNotifyTO;
 bool                        gIOGFades;
+static uint64_t				gIOFBVblDeltaMult;
 
 #define kIOFBGetSensorValueKey  "getSensorValue"
 
@@ -2060,14 +2062,13 @@ IOReturn IOFramebuffer::extSetCLUTWithEntries(
 
     if (inst == gIOFBConsoleFramebuffer)
     {
-        UInt32 count = index + dataLen / sizeof(IOColorEntry);
-        if (count > 256)
-            count = 256;
-        for (; index < count; index++)
+        UInt32 inIdx, count = index + dataLen / sizeof(IOColorEntry);
+        if (count > 256) count = 256;
+        for (inIdx = 0; index < count; index++, inIdx++)
         {
-            appleClut8[index * 3 + 0] = colors[index].red   >> 8;
-            appleClut8[index * 3 + 1] = colors[index].green >> 8;
-            appleClut8[index * 3 + 2] = colors[index].blue  >> 8;
+            appleClut8[index * 3 + 0] = colors[inIdx].red   >> 8;
+            appleClut8[index * 3 + 1] = colors[inIdx].green >> 8;
+            appleClut8[index * 3 + 2] = colors[inIdx].blue  >> 8;
         }
     }
 
@@ -2148,13 +2149,16 @@ IOReturn IOFramebuffer::createSharedCursor(
 {
     StdFBShmem_t *      shmem;
     UInt32              shmemVersion;
-    IOByteCount         size, maxImageSize, maxWaitImageSize;
+    size_t              size, maxImageSize, maxWaitImageSize;
     UInt32              numCursorFrames;
 
     DEBG(thisName, " vers = %08x, %d x %d\n",
          version, maxWidth, maxWaitWidth);
 
     shmemVersion = version & kIOFBShmemVersionMask;
+
+    if ((maxWidth > 1024) || (maxWaitWidth > 1024)) return (kIOReturnNoMemory);
+    if ((maxWidth < 0)    || (maxWaitWidth < 0))    return (kIOReturnNoMemory);
 
     if (shmemVersion == kIOFBTenPtTwoShmemVersion)
     {
@@ -2771,6 +2775,7 @@ void IOFramebuffer::initialize()
 
 	gIOGraphicsPrefsVersionKey = OSSymbol::withCStringNoCopy(kIOGraphicsPrefsVersionKey);
 	gIOGraphicsPrefsVersionValue = OSNumber::withNumber(kIOGraphicsPrefsCurrentVersion, 32);
+	gIOFBVblDeltaMult = (1 << 16);
 
     matching  = nameMatching("IOHIDSystem");
 	IOService * hidsystem = copyMatchingService(matching);
@@ -2813,7 +2818,7 @@ bool IOFramebuffer::start( IOService * provider )
             return (false);
         bzero( __private, sizeof(IOFramebufferPrivate) );
         __private->lastNotifyOnline = 0xdd;
-        __private->regID = getRegistryEntryID();
+        __private->regID            = getRegistryEntryID();
 
         userAccessRanges = OSArray::withCapacity( 1 );
         if (!userAccessRanges)
@@ -2991,12 +2996,13 @@ IOOptionBits IOFramebuffer::_setCursorImage( UInt32 frame )
     StdFBShmem_t * shmem = GetShmem(this);
     IOGPoint *     hs;
     IOOptionBits   flags;
-    bool           animation = (((int) frame) != shmem->frame);
+    bool           liftCursor, hsChange;
 
     hs = &shmem->hotSpot[0 != frame];
-    if (false && ((hs->x != __private->lastHotSpot.x) || (hs->y != __private->lastHotSpot.y)))
+    hsChange = ((hs->x != __private->lastHotSpot.x) || (hs->y != __private->lastHotSpot.y));
+    __private->lastHotSpot = *hs;
+    if (false && hsChange)
     {
-        __private->lastHotSpot = *hs;
         if (GetShmem(this) && __private->deferredCLUTSetEvent && shmem->vblCount && !__private->cursorSlept && !suspended)
         {
             if (false)
@@ -3004,22 +3010,23 @@ IOOptionBits IOFramebuffer::_setCursorImage( UInt32 frame )
                 __private->waitVBLEvent = hs;
                 FBWL(this)->sleepGate(hs, THREAD_UNINT);
             }
-            else if (CMP_ABSOLUTETIME(&shmem->vblDelta, &gIOFBMaxVBLDelta) < 0)
+            else if (CMP_ABSOLUTETIME(&shmem->vblDeltaReal, &gIOFBMaxVBLDelta) < 0)
             {
                 AbsoluteTime deadline = shmem->vblTime;
-                ADD_ABSOLUTETIME(&deadline, &shmem->vblDelta);
+                ADD_ABSOLUTETIME(&deadline, &shmem->vblDeltaReal);
                 clock_delay_until(deadline);
             }
         }
     }
 
-    if (!animation && ((kIOFBHardwareCursorActive == shmem->hardwareCursorActive) || !shmem->cursorShow))
+	liftCursor = ((kIOFBHardwareCursorActive != shmem->hardwareCursorActive) && !shmem->cursorShow);
+    if (liftCursor)
 	{
         RemoveCursor(this);
     }
     flags = (kIOReturnSuccess == setCursorImage( (void *)(uintptr_t) frame ))
             ? kIOFBHardwareCursorActive : 0;
-    if (!animation && !shmem->cursorShow)
+    if (liftCursor || (hsChange && !shmem->cursorShow))
 	{
         DisplayCursor(this);
 	}
@@ -3083,6 +3090,8 @@ void IOFramebuffer::moveCursor( IOGPoint * cursorLoc, int frame )
 {
     UInt32 hwCursorActive;
 
+    if ((frame < 0) || (frame >= __private->numCursorFrames)) return;
+
 	nextCursorLoc = *cursorLoc;
     nextCursorFrame = frame;
 
@@ -3132,6 +3141,8 @@ void IOFramebuffer::hideCursor( void )
 void IOFramebuffer::showCursor( IOGPoint * cursorLoc, int frame )
 {
     UInt32 hwCursorActive;
+
+    if ((frame < 0) || (frame >= __private->numCursorFrames)) return;
 
 	CURSORLOCK(this);
 
@@ -3199,7 +3210,7 @@ bool IOFramebuffer::getTimeOfVBL(AbsoluteTime * deadline, uint32_t frames)
 	}
 	while (last != AbsoluteTime_to_scalar(&shmem->vblTime));
 
-	delta = AbsoluteTime_to_scalar(&shmem->vblDelta);
+	delta = AbsoluteTime_to_scalar(&shmem->vblDeltaReal);
 	if (delta)
 	{
 		now += frames * delta - ((now - last) % delta);
@@ -3223,7 +3234,7 @@ void IOFramebuffer::handleVBL(IOFramebuffer * inst, void * ref)
     AbsoluteTime_to_scalar(&now) = _now;
 	AbsoluteTime delta = now;
 	SUB_ABSOLUTETIME(&delta, &shmem->vblTime);
-	calculatedDelta = AbsoluteTime_to_scalar(&shmem->vblDelta);
+	calculatedDelta = AbsoluteTime_to_scalar(&shmem->vblDeltaReal);
 
 	if (calculatedDelta && inst->__private->vblThrottle)
 	{
@@ -3247,13 +3258,14 @@ void IOFramebuffer::handleVBL(IOFramebuffer * inst, void * ref)
 	{
 		shmem->vblCount++;
 		shmem->vblDelta = delta;
+		shmem->vblDeltaReal = delta;
 	}
     shmem->vblTime  = now;
 	inst->__private->actualVBLCount = 0;
 
     KERNEL_DEBUG(0xc000030 | DBG_FUNC_NONE,
-                 (uint32_t)(AbsoluteTime_to_scalar(&shmem->vblDelta) >> 32),
-                 (uint32_t)(AbsoluteTime_to_scalar(&shmem->vblDelta)), 0, 0, 0);
+                 (uint32_t)(AbsoluteTime_to_scalar(&shmem->vblDeltaReal) >> 32),
+                 (uint32_t)(AbsoluteTime_to_scalar(&shmem->vblDeltaReal)), 0, 0, 0);
 
     if (inst->vblSemaphore)
         semaphore_signal_all(inst->vblSemaphore);
@@ -3295,7 +3307,7 @@ void IOFramebuffer::getVBLTime( AbsoluteTime * time, AbsoluteTime * delta )
     if (shmem)
     {
 		getTimeOfVBL(time, 0);
-        *delta = shmem->vblDelta;
+        *delta = shmem->vblDeltaReal;
     }
     else
     {
@@ -3558,14 +3570,13 @@ bool IOFramebuffer::convertCursorImage( void * cursorImage,
     {
         IOHardwareCursorDescriptor copy;
 
+		copy = *hwDesc;
+		copy.colorEncodings = NULL;
         if ((hwDesc->numColors == 0) && (hwDesc->bitDepth > 8) && (hwDesc->bitDepth < 32))
         {
-            copy = *hwDesc;
-            hwDesc = &copy;
             copy.bitDepth = 32;
         }
-
-        OSData * data = OSData::withBytes( hwDesc, sizeof(IOHardwareCursorDescriptor) );
+        OSData * data = OSData::withBytes( &copy, sizeof(IOHardwareCursorDescriptor) );
         if (data)
         {
             __private->cursorAttributes->setObject( data );
@@ -3578,6 +3589,8 @@ bool IOFramebuffer::convertCursorImage( void * cursorImage,
         return (false);
 
     assert( frame < __private->numCursorFrames );
+
+    if (frame >= __private->numCursorFrames) return (false);
 
     if (__private->cursorBytesPerPixel == 4)
     {
@@ -4075,13 +4088,18 @@ void IOFramebuffer::saveFramebuffer(void)
 			}
 			else
 			{
+				uint32_t  pixelBits;
 				uint8_t * gammaData = __private->gammaData;
 				if (gammaData) gammaData += __private->gammaHeaderSize;
-				dLen = CompressData( bits, kIOPreviewImageCount, bytesPerPixel,
+				if (__private->pixelInfo.bitsPerComponent > 8)
+					pixelBits = __private->pixelInfo.componentCount * __private->pixelInfo.bitsPerComponent;
+				else
+					pixelBits = __private->pixelInfo.bitsPerPixel;
+				dLen = CompressData( bits, kIOPreviewImageCount, bytesPerPixel, pixelBits,
 									 __private->framebufferWidth, __private->framebufferHeight, rowBytes,
 									 (UInt8 *) __private->saveFramebuffer, __private->saveLength,
-									 __private->gammaChannelCount, __private->gammaDataCount, 
-									__private->gammaDataWidth, gammaData);
+									 __private->rawGammaChannelCount, __private->rawGammaDataCount,
+									__private->rawGammaDataWidth, __private->rawGammaData);
 			}
 			DEBG1(thisName, " compressed to %d%%\n", (int) ((dLen * 100) / sLen));
 
@@ -4214,7 +4232,7 @@ IOReturn IOFramebuffer::restoreFramebuffer(IOIndex event)
 			}
 		}
 		DEBG1(thisName, " restoretype %d->%d\n", __private->restoreType, restoreType);
-		__private->needGammaRestore = (0 == __private->restoreType);
+		__private->needGammaRestore = (frameBuffer && (0 == __private->restoreType));
 		__private->restoreType      = restoreType;
 
 		if (kIOFBNotifyVRAMReady != event)
@@ -4535,10 +4553,10 @@ void IOFramebuffer::systemWork(OSObject * owner,
 	if (kIOFBWorking & allState)
 		return;
 
-	if (!(kIOFBWsWait & allState))
+	bool wsState = ((gIOFBSystemPower || gIOFBSwitching) && !(kIOFBDimmed & allState));
+	if (wsState != gIOFBWSState)
 	{
-		bool wsState = ((gIOFBSystemPower || gIOFBSwitching) && !(kIOFBDimmed & allState));
-		if (wsState != gIOFBWSState)
+		if (wsState || !(kIOFBWsWait & allState))
 		{
 			if (wsState && (kIOFBServerUp & allState))
 			{
@@ -4809,6 +4827,19 @@ void IOFramebuffer::systemWork(OSObject * owner,
 			FBUNLOCK(fb);
 		}
 		resetClamshell(kIOFBClamshellProbeDelayMS);
+	}
+
+	if (kIOFBEventVBLMultiplier & events)
+	{
+		OSBitAndAtomic(~kIOFBEventVBLMultiplier, &gIOFBGlobalEvents);
+		for (index = 0;
+			 (fb = (IOFramebuffer *) gAllFramebuffers->getObject(index));
+			 index++)
+		{
+			FBLOCK(fb);
+			fb->setVBLTiming();
+			FBUNLOCK(fb);
+		}
 	}
 }
 
@@ -5730,7 +5761,9 @@ IOReturn IOFramebuffer::powerStateWillChangeTo( IOPMPowerFlags flags,
 			FBLOCK(fb);
 			if (fb->__private->display && fb->__private->pendingUsable)
 			{
-				FBWL(fb)->sleepGate(&fb->__private->pendingUsable, THREAD_UNINT);
+                AbsoluteTime deadline;
+                clock_interval_to_deadline(1000, kMillisecondScale, &deadline );
+				FBWL(fb)->sleepGate(&fb->__private->pendingUsable, deadline, THREAD_UNINT);
 			}
 			FBUNLOCK(fb);
 		}
@@ -6934,7 +6967,11 @@ void IOFramebuffer::initFB(void)
 			{
 				if (2 == consoleInfo.v_scale) logo = 2;
 			}
-			else logo = 0;
+			else
+            {
+                logo = 0;
+                __private->needsInit = true;
+            }
 		}
 		DEBG1(thisName, " initFB: needsInit %d logo %d\n", 
 				__private->needsInit, logo);
@@ -7329,9 +7366,61 @@ OSData * IOFramebuffer::getConfigMode(IODisplayModeID mode, const OSSymbol * sym
 	return (OSDynamicCast(OSData, dict->getObject(sym)));
 }
 
+void IOFramebuffer::setVBLTiming(void)
+{
+    StdFBShmem_t * shmem = GetShmem(this);
+
+	if (kIODetailedTimingValid & __private->timingInfo.flags)
+	{
+		uint64_t count = ((uint64_t)(__private->timingInfo.detailedInfo.v2.horizontalActive
+								+ __private->timingInfo.detailedInfo.v2.horizontalBlanking));
+		count *= ((uint64_t)(__private->timingInfo.detailedInfo.v2.verticalActive
+							   + __private->timingInfo.detailedInfo.v2.verticalBlanking));
+		if (kIOInterlacedCEATiming & __private->timingInfo.detailedInfo.v2.signalConfig)
+			count >>= 1;
+
+		uint64_t clock  = __private->timingInfo.detailedInfo.v2.pixelClock;
+		uint64_t actual = __private->timingInfo.detailedInfo.v2.minPixelClock;
+
+		DEBG1(thisName, " minPixelClock %qd maxPixelClock %qd\n", 
+						__private->timingInfo.detailedInfo.v2.maxPixelClock,
+						__private->timingInfo.detailedInfo.v2.minPixelClock);
+
+		if (actual != __private->timingInfo.detailedInfo.v2.maxPixelClock)
+			actual = 0;
+		bool throttleEnable = (gIOFBVBLThrottle && clock && actual && shmem);
+		DEBG1(thisName, " vblthrottle(%d) clk %qd act %qd\n", throttleEnable, clock, actual);
+		if (throttleEnable)
+			clock = actual;
+		setProperty(kIOFBCurrentPixelClockKey, clock, 64);
+		setProperty(kIOFBCurrentPixelCountRealKey, count, 64);
+		setProperty(kIOFBCurrentPixelCountKey, (count * gIOFBVblDeltaMult) >> 16, 64);
+
+ 
+		if (shmem && throttleEnable)
+		{
+			mach_timebase_info_data_t timebaseInfo;
+			clock_timebase_info(&timebaseInfo);
+			AbsoluteTime_to_scalar(&shmem->vblDeltaReal) 
+					= (count * kSecondScale * timebaseInfo.numer / clock / timebaseInfo.denom);
+			AbsoluteTime_to_scalar(&shmem->vblDelta) = (AbsoluteTime_to_scalar(&shmem->vblDeltaReal) * gIOFBVblDeltaMult) >> 16;
+		}
+		__private->vblThrottle = throttleEnable;
+	}
+	else
+	{
+		removeProperty(kIOFBCurrentPixelClockKey);
+		removeProperty(kIOFBCurrentPixelCountKey);
+		if (shmem && __private->vblThrottle)
+		{
+			AbsoluteTime_to_scalar(&shmem->vblDeltaReal) = 0;
+			AbsoluteTime_to_scalar(&shmem->vblDelta) = 0;
+		}
+	}
+}
+
 IOReturn IOFramebuffer::doSetup( bool full )
 {
-    StdFBShmem_t *      		shmem = GetShmem(this);
     IOReturn                    err;
     IODisplayModeID             mode;
     IOIndex                     depth;
@@ -7371,51 +7460,15 @@ IOReturn IOFramebuffer::doSetup( bool full )
 	}
 
     __private->timingInfo.flags = kIODetailedTimingValid;
-    if (haveFB 
-     && (kIOReturnSuccess == getTimingInfoForDisplayMode(mode, &__private->timingInfo)))
-    {
-        if (kIODetailedTimingValid & __private->timingInfo.flags)
-        {
-        	uint64_t count = ((uint64_t)(__private->timingInfo.detailedInfo.v2.horizontalActive
-									+ __private->timingInfo.detailedInfo.v2.horizontalBlanking));
-			count *= ((uint64_t)(__private->timingInfo.detailedInfo.v2.verticalActive
-								   + __private->timingInfo.detailedInfo.v2.verticalBlanking));
-			if (kIOInterlacedCEATiming & __private->timingInfo.detailedInfo.v2.signalConfig)
-				count >>= 1;
+	if (!haveFB || (kIOReturnSuccess != getTimingInfoForDisplayMode(mode, &__private->timingInfo)))
+	{
+		bzero(&__private->timingInfo, sizeof(__private->timingInfo));
+	}
 
-			uint64_t clock  = __private->timingInfo.detailedInfo.v2.pixelClock;
-			uint64_t actual = __private->timingInfo.detailedInfo.v2.minPixelClock;
-
-			DEBG1(thisName, " minPixelClock %qd maxPixelClock %qd\n", 
-							__private->timingInfo.detailedInfo.v2.maxPixelClock,
-							__private->timingInfo.detailedInfo.v2.minPixelClock);
-
-			if (actual != __private->timingInfo.detailedInfo.v2.maxPixelClock)
-				actual = 0;
-			bool throttleEnable = (gIOFBVBLThrottle && clock && actual && shmem);
-			DEBG1(thisName, " vblthrottle(%d) clk %qd act %qd\n", throttleEnable, clock, actual);
-			if (throttleEnable)
-				clock = actual;
-            setProperty(kIOFBCurrentPixelClockKey, clock, 64);
-            setProperty(kIOFBCurrentPixelCountKey, count, 64);
-            if (shmem && throttleEnable)
-            {
-				mach_timebase_info_data_t timebaseInfo;
-				clock_timebase_info(&timebaseInfo);
-				AbsoluteTime_to_scalar(&shmem->vblDelta) 
-						= (count * kSecondScale * timebaseInfo.numer / clock / timebaseInfo.denom);
-			}
-			__private->vblThrottle = throttleEnable;
-			__private->setupMode = mode;
-        }
-        else
-        {
-            removeProperty(kIOFBCurrentPixelClockKey);
-            removeProperty(kIOFBCurrentPixelCountKey);
-			if (shmem && __private->vblThrottle)
-				AbsoluteTime_to_scalar(&shmem->vblDelta) = 0;
-        }
-
+    if (haveFB)
+	{
+		setVBLTiming();
+		if (kIODetailedTimingValid & __private->timingInfo.flags) __private->setupMode = mode;
         __private->scaledMode = false;
         if (kIOScalingInfoValid & __private->timingInfo.flags)
         {
@@ -7429,8 +7482,6 @@ IOReturn IOFramebuffer::doSetup( bool full )
                     && (__private->timingInfo.detailedInfo.v2.verticalScaled != __private->timingInfo.detailedInfo.v2.verticalActive)));
         }
     }
-    else
-		__private->timingInfo.flags = 0;
 
     if (full)
     {
@@ -7700,6 +7751,10 @@ IOReturn IOFramebuffer::extSetAttribute(
 			err = inst->extSetMirrorOne(value, other);
             break;
 
+        case kIOCursorControlAttribute:
+			err = kIOReturnBadArgument;
+			break;
+
         default:
             err = inst->setAttribute( attribute, value );
             break;
@@ -7763,7 +7818,7 @@ IOReturn IOFramebuffer::extGetAttribute(
 
 			uintptr_t result = (uintptr_t) other;
 			err = inst->getAttribute( attribute, &result );
-			*value = (UInt32) result;
+			if (kIOReturnSuccess == err) *value = (UInt32) result;
 
 			inst->extExit(err);
             break;
@@ -8738,6 +8793,16 @@ IOReturn IOFramebuffer::setAttributeForConnection( IOIndex connectIndex,
 
     switch( attribute )
     {
+        case kConnectionVBLMultiplier:
+            if (info != gIOFBVblDeltaMult)
+            {
+                gIOFBVblDeltaMult = info;
+				OSBitOrAtomic(kIOFBEventVBLMultiplier, &gIOFBGlobalEvents);
+				startThread(false);
+            }
+            err = kIOReturnSuccess;
+            break;
+
         case kConnectionRedGammaScale:
             if (info != __private->gammaScale[0])
             {
@@ -8837,6 +8902,7 @@ IOReturn IOFramebuffer::getAttributeForConnection( IOIndex connectIndex,
         case kConnectionDisplayParameterCount:
             result = 3;		         // 3 gamma rgb scales
 			if (gIOGFades) result++; // 1 gamma scale
+			result++;				 // vbl mult
             if (__private->enableScalerUnderscan)
                 result++;
             *value = result;
@@ -8849,6 +8915,7 @@ IOReturn IOFramebuffer::getAttributeForConnection( IOIndex connectIndex,
             value[result++] = kConnectionGreenGammaScale;
             value[result++] = kConnectionBlueGammaScale;
             if (gIOGFades) value[result++] = kConnectionGammaScale;
+			value[result++] = kConnectionVBLMultiplier;
             if (__private->enableScalerUnderscan)
                 value[result++] = kConnectionOverscan;
             err = kIOReturnSuccess;
@@ -8865,6 +8932,13 @@ IOReturn IOFramebuffer::getAttributeForConnection( IOIndex connectIndex,
             }
             else
                 err = kIOReturnUnsupported;
+            break;
+
+        case kConnectionVBLMultiplier:
+            value[0] = gIOFBVblDeltaMult;
+            value[1] = 0;
+            value[2] = (3 << 16);
+            err = kIOReturnSuccess;
             break;
 
         case kConnectionRedGammaScale:
@@ -10455,7 +10529,9 @@ bool IOFramebufferI2CInterface::start( IOService * provider )
             setProperty(kIOI2CSupportedCommFlagsKey, (UInt64) fSupportedCommFlags, 32);
         }
 
-        UInt64 id = (((UInt64) (uintptr_t) fFramebuffer) << 32) | fBusID;
+        num = OSDynamicCast(OSNumber, fFramebuffer->getProperty(kIOFramebufferOpenGLIndexKey));
+        UInt64 id = fBusID;
+        if (num) id |= (num->unsigned64BitValue() << 32);
         registerI2C(id);
 
         ok = true;

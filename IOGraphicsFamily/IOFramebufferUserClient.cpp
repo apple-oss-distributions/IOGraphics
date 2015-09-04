@@ -126,7 +126,7 @@ IOReturn IOFramebufferUserClient::clientMemoryForType( UInt32 type,
 
         default:
             mem = (IOMemoryDescriptor *) owner->userAccessRanges->getObject( type );
-            mem->retain();
+            if (mem) mem->retain();
             break;
     }
 
@@ -201,7 +201,7 @@ IOReturn IOFramebufferUserClient::externalMethod( uint32_t selector, IOExternalM
                     2, 0, 0, 0 },
     };
 
-    if (selector > (sizeof(methodTemplate) / sizeof(methodTemplate[0])))
+    if (selector >= (sizeof(methodTemplate) / sizeof(methodTemplate[0])))
         return (kIOReturnBadArgument);
 
     ret = super::externalMethod(selector, args, 
