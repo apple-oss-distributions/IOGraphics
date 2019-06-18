@@ -1,14 +1,14 @@
 /*
- * Copyright (c) 2017 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2018 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
+ *
  * The contents of this file constitute Original Code as defined in and
  * are subject to the Apple Public Source License Version 1.1 (the
  * "License").  You may not use this file except in compliance with the
  * License.  Please obtain a copy of the License at
  * http://www.apple.com/publicsource and read it before using this file.
- * 
+ *
  * This Original Code and all software distributed under the License are
  * distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
@@ -16,7 +16,7 @@
  * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
  * License for the specific language governing rights and limitations
  * under the License.
- * 
+ *
  * @APPLE_LICENSE_HEADER_END@
  */
 
@@ -27,9 +27,21 @@
 #include <IOKit/IOUserClient.h>
 
 #include <IOKit/graphics/IOAccelerator.h>
-#include <IOKit/graphics/IOGraphicsTypesPrivate.h>
+#include <IOKit/graphics/IOGraphicsPrivate.h>
+
+#include "IODisplayWrangler.h"
+
+#include "IOGraphicsDiagnose.h"
 
 #include "IOGraphicsKTrace.h"
+#include "IODisplayWranglerUserClients.hpp"
+#include "GMetric.hpp"
+
+#define COUNT_OF(x) \
+    ((sizeof(x)/sizeof(0[x])) / ((size_t)(!(sizeof(x) % sizeof(0[x])))))
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+#pragma mark - IOAccelerator -
 
 OSDefineMetaClassAndStructors(IOAccelerator, IOService)
 
@@ -161,7 +173,7 @@ private:
 
     IDDataDecode locateID(IOAccelID id)
     {
-        IDDataDecode ret = { NULL, NULL, -1 };
+        IDDataDecode ret = { NULL, NULL, -1U };
         const uint32_t zzid = int2zz(id);
         const uint32_t entryid = id - kAllocatedIDBase;
         if (zzid <= kMaxRequestedZigZag) {
@@ -261,42 +273,15 @@ IDState sIDState;  // Global variable, inited at load time
 };  // end anonymous namespace
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+#pragma mark - IOAccelerationUserClient -
 
 // Check fundamental assumption of data arrays
 OSCompileAssert(sizeof(kUnusedID) == sizeof(IOAccelID));
 
-class IOAccelerationUserClient : public IOUserClient
-{
-    OSDeclareDefaultStructors(IOAccelerationUserClient);
-    using super = IOUserClient;
-
-private:
-    OSData *fIDListData;  // list of allocated ids for this task
-
-    IOReturn extCreate(IOOptionBits options,
-                       IOAccelID requestedID, IOAccelID *idOutP);
-    IOReturn extDestroy(IOOptionBits options, IOAccelID id);
-
-public:
-    // OSObject overrides
-    virtual void free() APPLE_KEXT_OVERRIDE;
-
-    // IOService overrides
-    virtual bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
-    virtual void stop(IOService *provider) APPLE_KEXT_OVERRIDE;
-
-    // IOUserClient overrides
-    virtual bool initWithTask(task_t, void*, uint32_t,  OSDictionary*)
-        APPLE_KEXT_OVERRIDE;
-    virtual IOReturn clientClose() APPLE_KEXT_OVERRIDE;
-
-    virtual IOExternalMethod *
-        getTargetAndMethodForIndex(IOService **targetP, uint32_t index)
-        APPLE_KEXT_OVERRIDE;
-};
 OSDefineMetaClassAndStructors(IOAccelerationUserClient, IOUserClient);
 
-bool IOAccelerationUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type,
+bool IOAccelerationUserClient::
+initWithTask(task_t owningTask, void *securityID, UInt32 type,
              OSDictionary *properties)
 {
     IOAUC_START(initWithTask,type,0,0);
@@ -358,7 +343,8 @@ void IOAccelerationUserClient::stop(IOService *provider)
 }
 
 // Uses archaic 32bit user client interfaces
-IOExternalMethod *IOAccelerationUserClient::getTargetAndMethodForIndex(IOService **targetP, uint32_t index)
+IOExternalMethod *IOAccelerationUserClient::
+getTargetAndMethodForIndex(IOService **targetP, uint32_t index)
 {
     IOAUC_START(getTargetAndMethodForIndex,index,0,0);
     static const IOExternalMethod methodTemplate[] =
@@ -369,7 +355,7 @@ IOExternalMethod *IOAccelerationUserClient::getTargetAndMethodForIndex(IOService
                     kIOUCScalarIScalarO, 2, 0 },
     };
 
-    if (index >= (sizeof(methodTemplate) / sizeof(methodTemplate[0])))
+    if (index >= COUNT_OF(methodTemplate))
     {
         IOAUC_END(getTargetAndMethodForIndex,0,__LINE__,0);
         return NULL;
@@ -396,7 +382,8 @@ IOReturn trackID(const IOAccelID id, OSData *idsData)
 }
 };  // namespace
 
-IOReturn IOAccelerationUserClient::extCreate(IOOptionBits options, IOAccelID requestedID, IOAccelID *idOutP)
+IOReturn IOAccelerationUserClient::
+extCreate(IOOptionBits options, IOAccelID requestedID, IOAccelID *idOutP)
 {
     IOAUC_START(extCreate,options,requestedID,0);
     IOReturn ret = sIDState.createID(/* taskOwned */ true,
@@ -412,7 +399,8 @@ IOReturn IOAccelerationUserClient::extCreate(IOOptionBits options, IOAccelID req
     return ret;
 }
 
-IOReturn IOAccelerationUserClient::extDestroy(IOOptionBits /* options */, const IOAccelID id)
+IOReturn IOAccelerationUserClient::
+extDestroy(IOOptionBits /* options */, const IOAccelID id)
 {
     IOAUC_START(extDestroy,id,0,0);
     MutexLock locked(sIDState.lock());
@@ -434,8 +422,6 @@ IOReturn IOAccelerationUserClient::extDestroy(IOOptionBits /* options */, const 
     IOAUC_END(extDestroy,kIOReturnBadMessageID,0,0);
     return kIOReturnBadMessageID;
 }
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 IOReturn
 IOAccelerator::createAccelID(IOOptionBits options, IOAccelID *idOutP)
