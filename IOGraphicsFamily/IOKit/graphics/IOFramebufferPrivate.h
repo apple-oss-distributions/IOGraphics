@@ -20,6 +20,7 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
+protected:
     friend struct IOFBController;
 
     void setupCursor(void);
@@ -149,7 +150,6 @@
     static void dpInterrupt(OSObject * owner, IOTimerEventSource * sender);
     void dpProcessInterrupt(void);
     void dpUpdateConnect(void);
-        
 
     static void delayedEvent(thread_call_param_t p0, thread_call_param_t p1);
     static void resetClamshell(uint32_t delay, uint32_t where);
@@ -162,6 +162,7 @@
 
     static void writePrefs( OSObject * owner, IOTimerEventSource * sender );
     static void connectChangeInterrupt( IOFramebuffer * inst, void * ref );
+    void connectChangeInterruptImpl(uint16_t);
     void setNextDependent( IOFramebuffer * dependent );
     IOFramebuffer * getNextDependent( void );
     void setCaptured( bool isCaptured );
@@ -222,11 +223,13 @@
     IOReturn setDisplayAttributes(OSObject * data);
     IOReturn doSetDisplayMode(IODisplayModeID displayMode, IOIndex depth);
 	OSData * getConfigMode(IODisplayModeID mode, const OSSymbol * sym);
+    IOReturn doSetDetailedTimings(OSArray *arr, uint64_t source, uint64_t line);
 
     void assignGLIndex(void);
     IOReturn probeAccelerator(void);
 
-	static void saveGammaTables(void);
+    void diagnose(void *vFBState_IOGReport);
+    static void saveGammaTables(void);
 
     // -- user client support
 
@@ -256,21 +259,13 @@
     static IOReturn extAcknowledgeNotification(OSObject * target, void * reference, IOExternalMethodArguments * args);
     IOReturn extAcknowledgeNotificationImpl(IOExternalMethodArguments * args);
     IOReturn extCopySharedCursor(IOMemoryDescriptor **cursorH);
-    IOReturn newDiagnosticUserClient(IOUserClient **clientH);
+    IOReturn extCopyUserMemory(const uint32_t type,
+                               IOMemoryDescriptor** memP);
     static IOReturn extSetHibernateGammaTable(OSObject * target, void * reference, IOExternalMethodArguments * args);
+    void extClose(void);
+    void closeWork(IOInterruptEventSource *, int);
 
 private:
-    /*
-     New for IOGraphics diagnose
-     extReservedB() through extReservedE() reserved for future use.
-     */
-    static IOReturn extDiagnose(OSObject * target, void * reference, IOExternalMethodArguments * args);
-    static IOReturn extReservedB(OSObject * target, void * reference, IOExternalMethodArguments * args);
-    static IOReturn extReservedC(OSObject * target, void * reference, IOExternalMethodArguments * args);
-    static IOReturn extReservedD(OSObject * target, void * reference, IOExternalMethodArguments * args);
-    static IOReturn extReservedE(OSObject * target, void * reference, IOExternalMethodArguments * args);
-
-    IOReturn __Report( uintptr_t * r );
 
     /* New for addFramebufferNotificationWithOptions */
     static SInt32 osNotifyOrderFunction( const OSMetaClassBase *obj1, const OSMetaClassBase *obj2, void *context);
@@ -327,7 +322,6 @@ public:
     IODeviceMemory * getApertureRangeWithLength( IOPixelAperture aperture, IOByteCount requiredLength );
 
     IOReturn waitQuietController(void);
-    void closeNoSys(void);
 
 
 protected:

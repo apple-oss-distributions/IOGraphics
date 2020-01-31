@@ -1,14 +1,14 @@
 /*
- * Copyright (c) 2017 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2018 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
+ *
  * The contents of this file constitute Original Code as defined in and
  * are subject to the Apple Public Source License Version 1.1 (the
  * "License").  You may not use this file except in compliance with the
  * License.  Please obtain a copy of the License at
  * http://www.apple.com/publicsource and read it before using this file.
- * 
+ *
  * This Original Code and all software distributed under the License are
  * distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
@@ -16,20 +16,36 @@
  * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
  * License for the specific language governing rights and limitations
  * under the License.
- * 
+ *
  * @APPLE_LICENSE_HEADER_END@
  */
 
+#include "IODisplayWranglerUserClients.hpp"
+
+#include <iolocks>
+
 #include <IOKit/IOLib.h>
-#include <IOKit/IOLocks.h>
 #include <IOKit/assert.h>
 #include <IOKit/IOKitKeys.h>
 #include <IOKit/IOUserClient.h>
 
 #include <IOKit/graphics/IOAccelerator.h>
-#include <IOKit/graphics/IOGraphicsTypesPrivate.h>
+#include <IOKit/graphics/IOGraphicsPrivate.h>
+
+#include "IODisplayWrangler.h"
+
+#include "IOGraphicsDiagnose.h"
 
 #include "IOGraphicsKTrace.h"
+#include "GMetric.hpp"
+
+using iog::LockGuard;
+
+#define COUNT_OF(x) \
+    ((sizeof(x)/sizeof(0[x])) / ((size_t)(!(sizeof(x) % sizeof(0[x])))))
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+#pragma mark - IOAccelerator -
 
 OSDefineMetaClassAndStructors(IOAccelerator, IOService)
 
@@ -59,14 +75,6 @@ bool appendWord(uint32_t value, uint32_t fill, OSData *data)
     }
     return ret;
 }
-
-// RAII lock helper, auto unlocks at end of scope
-struct MutexLock {
-    MutexLock(IOLock *lock) : fLock(lock) { IOLockLock(fLock); }
-    ~MutexLock() { IOLockUnlock(fLock); }
-private:
-    IOLock * const fLock;
-};
 
 // Primary data structure to track IDs both those with specified IDs and those
 // that are just allocated with the lower free id.
@@ -111,7 +119,7 @@ private:
         const uint32_t oneRef = 1 | taskOwned;
         const uint32_t zzid = int2zz(id);
 
-        MutexLock locked(fLock);
+        LockGuard<IOLock> locked(fLock);
 
         if (zzid > kMaxRequestedZigZag)
             return kIOReturnExclusiveAccess;
@@ -135,7 +143,7 @@ private:
     {
         const uint32_t oneRef = 1 | taskOwned;
 
-        MutexLock locked(fLock);
+        LockGuard<IOLock> locked(fLock);
 
         // Look for an unused entry
         unsigned i;
@@ -161,7 +169,7 @@ private:
 
     IDDataDecode locateID(IOAccelID id)
     {
-        IDDataDecode ret = { NULL, NULL, -1 };
+        IDDataDecode ret = { NULL, NULL, -1U };
         const uint32_t zzid = int2zz(id);
         const uint32_t entryid = id - kAllocatedIDBase;
         if (zzid <= kMaxRequestedZigZag) {
@@ -261,58 +269,28 @@ IDState sIDState;  // Global variable, inited at load time
 };  // end anonymous namespace
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+#pragma mark - IOAccelerationUserClient -
 
 // Check fundamental assumption of data arrays
 OSCompileAssert(sizeof(kUnusedID) == sizeof(IOAccelID));
 
-class IOAccelerationUserClient : public IOUserClient
-{
-    OSDeclareDefaultStructors(IOAccelerationUserClient);
-    using super = IOUserClient;
-
-private:
-    OSData *fIDListData;  // list of allocated ids for this task
-
-    IOReturn extCreate(IOOptionBits options,
-                       IOAccelID requestedID, IOAccelID *idOutP);
-    IOReturn extDestroy(IOOptionBits options, IOAccelID id);
-
-public:
-    // OSObject overrides
-    virtual void free() APPLE_KEXT_OVERRIDE;
-
-    // IOService overrides
-    virtual bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
-    virtual void stop(IOService *provider) APPLE_KEXT_OVERRIDE;
-
-    // IOUserClient overrides
-    virtual bool initWithTask(task_t, void*, uint32_t,  OSDictionary*)
-        APPLE_KEXT_OVERRIDE;
-    virtual IOReturn clientClose() APPLE_KEXT_OVERRIDE;
-
-    virtual IOExternalMethod *
-        getTargetAndMethodForIndex(IOService **targetP, uint32_t index)
-        APPLE_KEXT_OVERRIDE;
-};
 OSDefineMetaClassAndStructors(IOAccelerationUserClient, IOUserClient);
 
-bool IOAccelerationUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type,
-             OSDictionary *properties)
+bool IOAccelerationUserClient::initWithTask(
+        task_t owningTask, void *securityID, UInt32 type,
+        OSDictionary *properties)
 {
-    IOAUC_START(initWithTask,type,0,0);
     if (properties)
         properties->setObject(
                 kIOUserClientCrossEndianCompatibleKey, kOSBooleanTrue);
     bool ret = super::initWithTask(owningTask, securityID, type, properties);
     if (ret)
         ret = sIDState.hasInited();
-    IOAUC_END(initWithTask,ret,0,0);
     return ret;
 }
 
 bool IOAccelerationUserClient::start(IOService *provider)
 {
-    IOAUC_START(start,0,0,0);
     bool ret = super::start(provider);
     if (ret) {
         fIDListData = OSData::withCapacity(kInitTableSize);
@@ -322,31 +300,25 @@ bool IOAccelerationUserClient::start(IOService *provider)
         else
             ret = false;
     }
-    IOAUC_END(start,ret,0,0);
     return ret;
 }
 
 void IOAccelerationUserClient::free()
 {
-    IOAUC_START(free,0,0,0);
     OSSafeReleaseNULL(fIDListData);
     super::free();
-    IOAUC_END(free,0,0,0);
 }
 
 IOReturn IOAccelerationUserClient::clientClose()
 {
-    IOAUC_START(clientClose,0,0,0);
     if (!isInactive())
         terminate();
-    IOAUC_END(clientClose,kIOReturnSuccess,0,0);
     return kIOReturnSuccess;
 }
 
 void IOAccelerationUserClient::stop(IOService *provider)
 {
-    IOAUC_START(stop,0,0,0);
-    MutexLock locked(sIDState.lock());
+    LockGuard<IOLock> locked(sIDState.lock());
 
     for (int i = 0; uint32_t *uP = getID(fIDListData, i); ++i)
         if (*uP != kUnusedID) {
@@ -354,13 +326,12 @@ void IOAccelerationUserClient::stop(IOService *provider)
             *uP = kUnusedID;
         }
     super::stop(provider);
-    IOAUC_END(stop,0,0,0);
 }
 
 // Uses archaic 32bit user client interfaces
-IOExternalMethod *IOAccelerationUserClient::getTargetAndMethodForIndex(IOService **targetP, uint32_t index)
+IOExternalMethod *IOAccelerationUserClient::getTargetAndMethodForIndex(
+        IOService **targetP, uint32_t index)
 {
-    IOAUC_START(getTargetAndMethodForIndex,index,0,0);
     static const IOExternalMethod methodTemplate[] =
     {
         /* 0 */  { NULL, (IOMethod) &IOAccelerationUserClient::extCreate,
@@ -369,14 +340,10 @@ IOExternalMethod *IOAccelerationUserClient::getTargetAndMethodForIndex(IOService
                     kIOUCScalarIScalarO, 2, 0 },
     };
 
-    if (index >= (sizeof(methodTemplate) / sizeof(methodTemplate[0])))
-    {
-        IOAUC_END(getTargetAndMethodForIndex,0,__LINE__,0);
+    if (index >= COUNT_OF(methodTemplate))
         return NULL;
-    }
 
     *targetP = this;
-    IOAUC_END(getTargetAndMethodForIndex,0,0,0);
     return const_cast<IOExternalMethod *>(&methodTemplate[index]);
 }
 
@@ -396,30 +363,28 @@ IOReturn trackID(const IOAccelID id, OSData *idsData)
 }
 };  // namespace
 
-IOReturn IOAccelerationUserClient::extCreate(IOOptionBits options, IOAccelID requestedID, IOAccelID *idOutP)
+IOReturn IOAccelerationUserClient::extCreate(
+        IOOptionBits options, IOAccelID requestedID, IOAccelID *idOutP)
 {
-    IOAUC_START(extCreate,options,requestedID,0);
     IOReturn ret = sIDState.createID(/* taskOwned */ true,
                                      options, requestedID, idOutP);
     if (kIOReturnSuccess == ret) {
-        MutexLock locked(sIDState.lock());
+        LockGuard<IOLock> locked(sIDState.lock());
 
         ret = trackID(*idOutP, fIDListData);
         if (ret)
             sIDState.releaseID(/* taskOwned */ true, *idOutP);
     }
-    IOAUC_END(extCreate,ret,0,0);
     return ret;
 }
 
-IOReturn IOAccelerationUserClient::extDestroy(IOOptionBits /* options */, const IOAccelID id)
+IOReturn IOAccelerationUserClient::extDestroy(
+        IOOptionBits /* options */, const IOAccelID id)
 {
-    IOAUC_START(extDestroy,id,0,0);
-    MutexLock locked(sIDState.lock());
+    LockGuard<IOLock> locked(sIDState.lock());
     IOReturn ret = sIDState.validID(id);
     if (ret)
     {
-        IOAUC_END(extDestroy,kIOReturnBadMessageID,__LINE__,0);
         return kIOReturnBadMessageID;
     }
 
@@ -428,45 +393,35 @@ IOReturn IOAccelerationUserClient::extDestroy(IOOptionBits /* options */, const 
             // we allocated this id and it is valid
             sIDState.releaseID(/* taskOwned */ true, id);
             *uP = kUnusedID;
-            IOAUC_END(extDestroy,kIOReturnSuccess,0,0);
             return kIOReturnSuccess;
         }
-    IOAUC_END(extDestroy,kIOReturnBadMessageID,0,0);
     return kIOReturnBadMessageID;
 }
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 IOReturn
 IOAccelerator::createAccelID(IOOptionBits options, IOAccelID *idOutP)
 {
-    IOA_START(createAccelID,options,0,0);
     IOReturn ret = sIDState.createID(/* taskOwned */ false,
                                      options, *idOutP, idOutP);
-    IOA_END(createAccelID,ret,0,0);
     return ret;
 }
 
 IOReturn
 IOAccelerator::retainAccelID(IOOptionBits /* options */, IOAccelID id)
 {
-    IOA_START(retainAccelID,id,0,0);
-    MutexLock locked(sIDState.lock());
+    LockGuard<IOLock> locked(sIDState.lock());
     IOReturn ret = sIDState.validID(id);
     if (!ret)
         sIDState.retainID(id);
-    IOA_END(retainAccelID,ret,0,0);
     return ret;
 }
 
 IOReturn
 IOAccelerator::releaseAccelID(IOOptionBits /* options */, IOAccelID id)
 {
-    IOA_START(releaseAccelID,id,0,0);
-    MutexLock locked(sIDState.lock());
+    LockGuard<IOLock> locked(sIDState.lock());
     IOReturn ret = sIDState.validID(id);
     if (!ret)
         sIDState.releaseID(/* taskOwned */ false, id);
-    IOA_END(releaseAccelID,ret,0,0);
     return ret;
 }

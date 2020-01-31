@@ -32,10 +32,13 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/assert.h>
 
+#include <IOKit/graphics/IOBacklightDisplayTrace.h>
 #include <IOKit/graphics/IODisplay.h>
 #include <IOKit/graphics/IOGraphicsPrivate.h>
 
 #include "IOGraphicsKTrace.h"
+#include "GMetric.hpp"
+
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
@@ -104,6 +107,7 @@ const OSSymbol * gIODisplayFadeTime3Key;
 const OSSymbol * gIODisplayFadeStyleKey;
 
 static const OSSymbol * gIODisplayFastBootEDIDKey;
+static const OSSymbol * gIODisplayParametersOwner;
 static IODTPlatformExpert * gIODisplayFastBootPlatform;
 static OSData *  gIODisplayZeroData;
 
@@ -116,6 +120,10 @@ enum
     kIODisplayBlankValue   = 0x100,
     kIODisplayUnblankValue = 0x200,
 };
+
+#define RECORD_METRIC(func) \
+    GMETRICFUNC(func, DBG_FUNC_NONE, \
+            kGMETRICS_DOMAIN_IODISPLAY | kGMETRICS_DOMAIN_POWER)
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
@@ -212,6 +220,7 @@ void IODisplay::initialize( void )
                                             kIODisplayTheatreModeKey);
     gIODisplayParametersTheatreModeWindowKey = OSSymbol::withCStringNoCopy(
                                             kIODisplayTheatreModeWindowKey);
+    gIODisplayParametersOwner = OSSymbol::withCStringNoCopy("ownr");
 
     gIODisplayMCCSVersionKey = OSSymbol::withCStringNoCopy(
                                             kIODisplayMCCSVersionKey);
@@ -379,7 +388,8 @@ bool IODisplay::start( IOService * provider )
     fConnection->getAttributeForConnection(kConnectionFlags, &connectFlags);
     FB_END(getAttributeForConnection,0,__LINE__,connectFlags);
     uint32_t flagsData = (uint32_t) connectFlags;
-    setProperty(kIODisplayConnectFlagsKey, &flagsData, sizeof(flagsData));
+    setProperty(
+            kIODisplayConnectFlagsKey, &flagsData, sizeof(flagsData));
 
     edidData = OSDynamicCast( OSData, getProperty( kIODisplayEDIDKey ));
     if (!edidData)
@@ -587,12 +597,18 @@ bool IODisplay::addParameterHandler( IODisplayParameterHandler * parameterHandle
     OSArray * array;
     array = OSDynamicCast(OSArray, fParameterHandler);
 
-    if (array && ((unsigned int) -1 != array->getNextIndexOfObject(parameterHandler, 0)))
+    if (array && (-1U != array->getNextIndexOfObject(parameterHandler, 0)))
     {
+        // Already added
         IOD_END(addParameterHandler,true,__LINE__,0);
         return (true);
     }
 
+
+    const auto isBuiltin =
+        static_cast<bool>(OSDynamicCast(IOBacklightDisplay, this));
+    ABL_GT_SET_DISPLAY(this, ABL_SOURCE_IOD_ADDPARAMETERHANDLER,
+                       -1, isBuiltin, false);
     if (!parameterHandler->setDisplay(this))
     {
         IOD_END(addParameterHandler,false,__LINE__,0);
@@ -678,6 +694,7 @@ void IODisplay::free()
     super::free();
     IOD_END(free,0,0,0);
 }
+
 
 IOReturn IODisplay::readFramebufferEDID( void )
 {
@@ -842,6 +859,40 @@ bool IODisplay::setForKey( OSDictionary * params, const OSSymbol * sym,
     IOD_END(setForKey,ok,0,0);
     return (ok);
 }
+
+// TODO(gvdl): Should implement setDisplayParameters. Unfortunately that will
+// revlock between AppleBacklight, AGDCBacklightControl and AppleMCCSControl.
+// For the time being just furtle with the parameter dictionary as it goes by.
+// Unfortunately that means we have to implement every variation of the super
+// class setProperty(), sigh.
+bool IODisplay::setProperty(const OSSymbol *aKey, OSObject* anObject)
+{
+    if (gIODisplayParametersKey == aKey && fConnection) {
+        auto* fbRegIDNum =
+            OSNumber::withNumber(fConnection->getFBRegistryID(), 64);
+        if (fbRegIDNum) {
+            auto* params = OSDynamicCast(OSDictionary, anObject);
+            assert(params);
+            if (params)
+                params->setObject(gIODisplayParametersOwner, fbRegIDNum);
+            OSSafeReleaseNULL(fbRegIDNum);
+        }
+    }
+    return super::setProperty(aKey, anObject);
+}
+
+bool IODisplay::setProperty(const OSString* aKey, OSObject* anObject)
+    { return super::setProperty(aKey, anObject); }
+bool IODisplay::setProperty(const char* aKey, OSObject* anObject)
+    { return super::setProperty(aKey, anObject); }
+bool IODisplay::setProperty(const char* aKey, const char* aString)
+    { return super::setProperty(aKey, aString); }
+bool IODisplay::setProperty(const char* aKey, bool aBoolean)
+    { return super::setProperty(aKey, aBoolean); }
+bool IODisplay::setProperty(const char* aKey, unsigned long long aValue, unsigned int aNumberOfBits)
+    { return super::setProperty(aKey, aValue, aNumberOfBits); }
+bool IODisplay::setProperty(const char* aKey, void* bytes, unsigned int length)
+    { return super::setProperty(aKey, bytes, length); }
 
 IOReturn IODisplay::setProperties( OSObject * properties )
 {
@@ -1071,14 +1122,62 @@ bool IODisplay::addParameter( OSDictionary * params, const OSSymbol * paramName,
     return (ok);
 }
 
+// setParameter is a static function and can't call the standard ABL_GT_.*()
+// macros. I have to re-implement them here locally, I get the fb registry ID
+// from a new IODisplayParamaters["ownr"] field if it is available.
+#define staticABL_GT_REPORT_PROC(fid, params, a1)  do {                        \
+    const uint16_t _t0_ = GTFuncTag(fid, /* FUNC_NONE */ 0, 0);                \
+    auto* const _fbRegIDNum_ = OSDynamicCast(                                  \
+            OSNumber, params->getObject(gIODisplayParametersOwner));           \
+    const uint64_t _a0_ = _fbRegIDNum_? _fbRegIDNum_->unsigned64BitValue() : 0;\
+    uint64_t _pnInt_[2]  = { 0 };                                              \
+    proc_selfname(GPACKSTRINGCAST(_pnInt_), sizeof(_pnInt_));                  \
+    ABLTRACE_RAW(_t0_,                    _a0_,                                \
+                 0,                       (a1),                                \
+                 kGTRACE_ARGUMENT_STRING, _pnInt_[0],                          \
+                 kGTRACE_ARGUMENT_STRING, _pnInt_[1]);                         \
+} while(0)
+
+#define staticABL_GT_SET_BRIGHTNESS_IMPL(fid, params, where, b, lb, isLin) do {\
+    const uint64_t _a1_ = GPACKUINT8T(0, /* version */ 0)                      \
+                        | GPACKUINT8T(1, where)                                \
+                        | GPACKBIT(31, isLin)                                  \
+                        | GPACKUINT16T(2, lb)                                  \
+                        | GPACKUINT16T(3, b);                                  \
+    staticABL_GT_REPORT_PROC(fid, params, _a1_);                               \
+} while(0)
+#define staticABL_GT_SET_BRIGHTNESS(params, where, b, lb, isLinear)            \
+    staticABL_GT_SET_BRIGHTNESS_IMPL(ABL_SET_BRIGHTNESS,                       \
+                                     params, where, b, lb, isLinear)
+#define staticABL_GT_SET_BRIGHTNESS_PROBE(params, where, b, lb, isLinear)      \
+    staticABL_GT_SET_BRIGHTNESS_IMPL(ABL_SET_BRIGHTNESS_PROBE,                 \
+                                     params, where, b, lb, isLinear)
+
+#define staticABL_GT_SET_DISPLAY_POWER(params, where, newVal, oldVal, ind) do {\
+    const uint64_t _a1_ = GPACKUINT8T(0, /* version */ 0)                      \
+                        | GPACKUINT8T(1, where)                                \
+                        | GPACKUINT8T(2, newVal)                               \
+                        | GPACKUINT8T(3, oldVal)                               \
+                        | GPACKUINT16T(3, ind);                                \
+    staticABL_GT_REPORT_PROC(ABL_SET_DISPLAY_POWER, params, _a1_);             \
+} while(0)
+
+
+#define staticABL_GT_COMMITTED(params, where, lb, nvr, asu) do {               \
+    const uint64_t _a1_ = GPACKUINT8T(0, /* version */ 0)                      \
+                        | GPACKUINT8T(1, where)                                \
+                        | GPACKBIT(30, asu) | GPACKBIT(31, nvr)                \
+                        | GPACKUINT16T(3, lb);                                 \
+    staticABL_GT_REPORT_PROC(ABL_COMMIT, params, _a1_);                        \
+} while(0)
+
 bool IODisplay::setParameter( OSDictionary * params, const OSSymbol * paramName,
                               SInt32 value )
 {
     IOD_START(setParameter,value,0,0);
-    OSDictionary *      paramDict;
     bool                ok = true;
 
-    paramDict = (OSDictionary *) params->getObject(paramName);
+    auto* paramDict = static_cast<OSDictionary *>(params->getObject(paramName));
     if (!paramDict)
     {
         IOD_END(setParameter,false,__LINE__,0);
@@ -1093,11 +1192,38 @@ bool IODisplay::setParameter( OSDictionary * params, const OSSymbol * paramName,
         value = max - value + min;
     }
 
+    if (gIODisplayBrightnessProbeKey == paramName)
+        staticABL_GT_SET_BRIGHTNESS_PROBE(
+                params, ABL_SOURCE_IOD_SETPARAMETER,
+                value, -1, /* isLin */ false);
+    else if (gIODisplayLinearBrightnessProbeKey == paramName)
+        staticABL_GT_SET_BRIGHTNESS_PROBE(
+                params, ABL_SOURCE_IOD_SETPARAMETER,
+                -1, value, /* isLin */ true);
+    else if (gIODisplayBrightnessKey == paramName)
+        staticABL_GT_SET_BRIGHTNESS(params, ABL_SOURCE_IOD_SETPARAMETER,
+                                    value, -1, /* isLin */ false);
+    else if (gIODisplayLinearBrightnessKey == paramName)
+        staticABL_GT_SET_BRIGHTNESS(params, ABL_SOURCE_IOD_SETPARAMETER,
+                                    -1, value, /* isLin */ true);
+    else if (gIODisplayParametersCommitKey == paramName)
+        staticABL_GT_COMMITTED(params, ABL_SOURCE_IOD_SETPARAMETER,
+                               -1, /*nvram*/false, /*setup*/ false);
+    else if (gIODisplayPowerStateKey == paramName)
+        staticABL_GT_SET_DISPLAY_POWER(params, ABL_SOURCE_IOD_SETPARAMETER,
+                                       value, -1, -1);
+
     updateNumber( paramDict, gIODisplayValueKey, value );
 
     IOD_END(setParameter,ok,__LINE__,0);
     return (ok);
 }
+#undef staticABL_GT_REPORT_PROC
+#undef staticABL_GT_SET_BRIGHTNESS_IMPL
+#undef staticABL_GT_SET_BRIGHTNESS
+#undef staticABL_GT_SET_BRIGHTNESS_PROBE
+#undef staticABL_GT_SET_DISPLAY_POWER
+#undef staticABL_GT_COMMITTED
 
 IOReturn IODisplay::_framebufferEvent( OSObject * osobj, void * ref,
                                        IOFramebuffer * framebuffer, IOIndex event, void * info )
@@ -1161,30 +1287,50 @@ bool IODisplay::doIntegerSet( OSDictionary * params,
     OSArray *                   array;
     bool                        ok = false;
 
-    if (gIODisplayFadeTime1Key == paramName)
-    {
+    if (gIODisplayFadeTime1Key == paramName) {
+        gIODisplayFadeTime1 = value;
+        IOD_END(doIntegerSet,true,__LINE__,0);
+        return (true);
+    }
+    else if (gIODisplayFadeTime1Key == paramName) {
     	gIODisplayFadeTime1 = value;
         IOD_END(doIntegerSet,true,__LINE__,0);
         return (true);
     }
-    if (gIODisplayFadeTime2Key == paramName)
-    {
+    else if (gIODisplayFadeTime2Key == paramName) {
     	gIODisplayFadeTime2 = value;
         IOD_END(doIntegerSet,true,__LINE__,0);
         return (true);
     }
-    if (gIODisplayFadeTime3Key == paramName)
-    {
+    else if (gIODisplayFadeTime3Key == paramName) {
     	gIODisplayFadeTime3 = value;
         IOD_END(doIntegerSet,true,__LINE__,0);
         return (true);
     }
-    if (gIODisplayFadeStyleKey == paramName)
-    {
+    else if (gIODisplayFadeStyleKey == paramName) {
     	gIODisplayFadeStyle = value;
         IOD_END(doIntegerSet,true,__LINE__,0);
         return (true);
     }
+
+    if (gIODisplayBrightnessProbeKey == paramName)
+        ABL_GT_SET_BRIGHTNESS_PROBE(this, ABL_SOURCE_IOD_DOINTEGERSET,
+                                    value, -1, /* isLin */ false);
+    else if (gIODisplayLinearBrightnessProbeKey == paramName)
+        ABL_GT_SET_BRIGHTNESS_PROBE(this, ABL_SOURCE_IOD_DOINTEGERSET,
+                                    -1, value, /* isLin */ true);
+    else if (gIODisplayBrightnessKey == paramName)
+        ABL_GT_SET_BRIGHTNESS(this, ABL_SOURCE_IOD_DOINTEGERSET,
+                              value, -1, /* isLin */ false);
+    else if (gIODisplayLinearBrightnessKey == paramName)
+        ABL_GT_SET_BRIGHTNESS(this, ABL_SOURCE_IOD_DOINTEGERSET,
+                              -1, value, /* isLin */ true);
+    else if (gIODisplayParametersCommitKey == paramName)
+        ABL_GT_COMMITTED(this, ABL_SOURCE_IOD_DOINTEGERSET,
+                         -1, /*nvram*/false, /*setup*/ false);
+    else if (gIODisplayPowerStateKey == paramName)
+        ABL_GT_SET_DISPLAY_POWER(this, ABL_SOURCE_IOD_DOINTEGERSET,
+                                 value, -1, -1);
 
     parameterHandler = OSDynamicCast(IODisplayParameterHandler, fParameterHandler);
 
@@ -1238,11 +1384,11 @@ bool IODisplay::doUpdate( void )
     OSArray *                   array;
     bool                        ok = true;
 
-    parameterHandler = OSDynamicCast(IODisplayParameterHandler, fParameterHandler);
+    parameterHandler =
+        OSDynamicCast(IODisplayParameterHandler, fParameterHandler);
 
     if (parameterHandler)
         ok = parameterHandler->doUpdate();
-
     else if ((array = OSDynamicCast(OSArray, fParameterHandler)))
     {
         for (unsigned int i = 0;
@@ -1253,6 +1399,8 @@ bool IODisplay::doUpdate( void )
         }
     }
 
+    ABL_GT_DO_UPDATE(this, ABL_SOURCE_IOD_DOUPDATE,
+                     ok, /* update count */ -1);
     IOD_END(doUpdate,ok,0,0);
     return (ok);
 }
@@ -1327,6 +1475,7 @@ void IODisplay::initPowerManagement( IOService * provider )
 
 void IODisplay::setDisplayPowerState(unsigned long state)
 {
+    // On FBController workloop
     IOD_START(setDisplayPowerState,state,0,0);
     if (initialized)
     {
@@ -1338,10 +1487,9 @@ void IODisplay::setDisplayPowerState(unsigned long state)
         }
         fDisplayPMVars->displayIdle = (state != fDisplayPMVars->maxState);
 
-        IOG_KTRACE(DBG_IOG_CHANGE_POWER_STATE_PRIV,
-                   DBG_FUNC_NONE,
-                   kGMETRICS_DOMAIN_IODISPLAY | kGMETRICS_DOMAIN_POWER,
-                   DBG_IOG_SOURCE_IODISPLAY,
+        RECORD_METRIC(DBG_IOG_CHANGE_POWER_STATE_PRIV);
+        IOG_KTRACE(DBG_IOG_CHANGE_POWER_STATE_PRIV, DBG_FUNC_NONE,
+                   0, DBG_IOG_SOURCE_IODISPLAY,
                    0, state,
                    0, 0,
                    0, 0);
@@ -1371,10 +1519,10 @@ void IODisplay::makeDisplayUsable(void)
 
 IOReturn IODisplay::setPowerState( unsigned long powerState, IOService * whatDevice )
 {
-    IOG_KTRACE(DBG_IOG_SET_POWER_STATE,
-               DBG_FUNC_NONE,
-               kGMETRICS_DOMAIN_IODISPLAY | kGMETRICS_DOMAIN_POWER,
-               powerState,
+    // Single threaded by IOServicePM design
+    RECORD_METRIC(DBG_IOG_SET_POWER_STATE);
+    IOG_KTRACE(DBG_IOG_SET_POWER_STATE, DBG_FUNC_NONE,
+               0, powerState,
                0, DBG_IOG_SOURCE_IODISPLAY,
                0, 0,
                0, 0);
